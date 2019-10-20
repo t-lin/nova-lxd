@@ -832,8 +832,11 @@ class LXDDriver(driver.ComputeDriver):
             flavor.to_profile(
                 self.client, instance, network_info, block_device_info,
                 update=True)
-        container = self.client.containers.get(instance.name)
-        container.stop(wait=True)
+        else:
+            # Don't stop container if migrating to same host
+            container = self.client.containers.get(instance.name)
+            container.stop(wait=True)
+
         return ''
 
     def snapshot(self, context, instance, image_id, update_task_state):
@@ -1145,22 +1148,27 @@ class LXDDriver(driver.ComputeDriver):
             fileutils.ensure_tree(instance_dir)
 
         # Step 1 - Setup the profile on the dest host
-        flavor.to_profile(self.client,
-                          instance, network_info, block_device_info)
+        if resize_instance and migration.source_node == migration.dest_node:
+            flavor.to_profile(self.client, instance, network_info,
+                              block_device_info, update=True)
+        else:
+            flavor.to_profile(self.client, instance, network_info,
+                              block_device_info, update=False)
 
-        # Step 2 - Open a websocket on the srct and and
-        #          generate the container config
-        self._migrate(migration['source_compute'], instance)
+            # Step 2 - Open a websocket on the srct and and
+            #          generate the container config
+            self._migrate(migration['source_compute'], instance)
 
-        # Step 3 - Start the network and container
-        self.plug_vifs(instance, network_info)
-        self.client.container.get(instance.name).start(wait=True)
+            # Step 3 - Start the network and container
+            self.plug_vifs(instance, network_info)
+            self.client.container.get(instance.name).start(wait=True)
 
-    def confirm_migration(self, migration, instance, network_info):
-        self.unplug_vifs(instance, network_info)
+    def confirm_migration(self, context, migration, instance, network_info):
+        if migration.source_node != migration.dest_node:
+            self.unplug_vifs(instance, network_info)
 
-        self.client.profiles.get(instance.name).delete()
-        self.client.containers.get(instance.name).delete(wait=True)
+            self.client.profiles.get(instance.name).delete()
+            self.client.containers.get(instance.name).delete(wait=True)
 
     def finish_revert_migration(self, context, instance, network_info,
                                 block_device_info=None, power_on=True):
